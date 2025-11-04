@@ -7,3 +7,5 @@ langchain-chroma
 openai
 python-dotenv
 chromadb
+pinecone-client
+langchain-pinecone

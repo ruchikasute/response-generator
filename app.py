@@ -461,7 +461,7 @@ import docx
 from docx import Document
 from openai import AzureOpenAI
 from langchain_openai import AzureOpenAIEmbeddings
-from langchain_chroma import Chroma
+# from langchain_chroma import Chroma
 from langchain_core.documents import Document as LDocument
 from docx.shared import Inches, RGBColor
 from docx.oxml import OxmlElement
@@ -476,6 +476,8 @@ from Modules.prompts import (
     get_resource_schedule_and_commercial_prompt,
     get_communication_plan_prompt
 )
+from langchain_pinecone import PineconeVectorStore
+from pinecone import Pinecone
 
 
 # -------------------------------------------------------
@@ -573,43 +575,87 @@ def extract_text(file):
         return "\n".join([p.text for p in doc.paragraphs])
     return ""
 
-def build_knowledge_base(folder=KNOWLEDGE_FOLDER, persist_dir=PERSIST_DIR):
-    """Build or load persistent Chroma vector DB from Knowledge_Repo"""
-    # ... (rest of build_knowledge_base remains the same)
-    os.makedirs(folder, exist_ok=True)
-    os.makedirs(persist_dir, exist_ok=True)
+# def build_knowledge_base(folder=KNOWLEDGE_FOLDER, persist_dir=PERSIST_DIR):
+#     """Build or load persistent Chroma vector DB from Knowledge_Repo"""
+#     # ... (rest of build_knowledge_base remains the same)
+#     os.makedirs(folder, exist_ok=True)
+#     os.makedirs(persist_dir, exist_ok=True)
 
-    embedding_model = AzureOpenAIEmbeddings(
-        model="text-embedding-ada-002",
-        azure_endpoint=os.getenv("AZURE_OPENAI_EMD_ENDPOINT"),
-        api_key=os.getenv("AZURE_OPENAI_EMD_KEY"),
-        api_version=os.getenv("AZURE_OPENAI_EMD_VERSION")
-    )
+#     embedding_model = AzureOpenAIEmbeddings(
+#         model="text-embedding-ada-002",
+#         azure_endpoint=os.getenv("AZURE_OPENAI_EMD_ENDPOINT"),
+#         api_key=os.getenv("AZURE_OPENAI_EMD_KEY"),
+#         api_version=os.getenv("AZURE_OPENAI_EMD_VERSION")
+#     )
 
-    if os.listdir(persist_dir):
-        return Chroma(
-            embedding_function=embedding_model,
-            persist_directory=persist_dir,
-            collection_name="rfp_responses"
+#     if os.listdir(persist_dir):
+#         return Chroma(
+#             embedding_function=embedding_model,
+#             persist_directory=persist_dir,
+#             collection_name="rfp_responses"
+#         )
+
+#     docs = []
+#     for f in os.listdir(folder):
+#         if f.endswith((".pdf", ".docx")):
+#             path = os.path.join(folder, f)
+#             text = extract_text(open(path, "rb"))
+#             if text.strip():
+#                 docs.append(LDocument(page_content=text, metadata={"source": f}))
+
+#     if not docs:
+#         raise ValueError(f"No readable files found in {folder}")
+
+#     return Chroma.from_documents(
+#         documents=docs,
+#         embedding=embedding_model,
+#         persist_directory=persist_dir,
+#         collection_name="rfp_responses"
+#     )
+
+from pinecone import Pinecone, ServerlessSpec
+from langchain_pinecone import PineconeVectorStore
+from langchain_community.embeddings import HuggingFaceEmbeddings
+import os
+
+def build_knowledge_base(folder="Knowledge_Repo"):
+    embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+    index_name = "response-generator"
+
+    # Create index if it doesn't exist
+    if index_name not in [idx["name"] for idx in pc.list_indexes()]:
+        pc.create_index(
+            name=index_name,
+            dimension=384,  # ✅ MiniLM-L6-v2 has 384 dims (not 1024)
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1")
         )
 
-    docs = []
-    for f in os.listdir(folder):
-        if f.endswith((".pdf", ".docx")):
-            path = os.path.join(folder, f)
-            text = extract_text(open(path, "rb"))
-            if text.strip():
-                docs.append(LDocument(page_content=text, metadata={"source": f}))
+    index = pc.Index(index_name)
 
-    if not docs:
-        raise ValueError(f"No readable files found in {folder}")
+    vector_store = PineconeVectorStore(index=index, embedding=embedding_model)
 
-    return Chroma.from_documents(
-        documents=docs,
-        embedding=embedding_model,
-        persist_directory=persist_dir,
-        collection_name="rfp_responses"
-    )
+    # --- Upload documents if index is empty ---
+    stats = pc.describe_index(index_name)
+    if stats.get("status", {}).get("ready", False):
+        # Load local RFP references
+        docs = []
+        for file in os.listdir(folder):
+            if file.endswith((".pdf", ".docx")):
+                path = os.path.join(folder, file)
+                text = extract_text(open(path, "rb"))
+                if text.strip():
+                    docs.append(LDocument(page_content=text, metadata={"source": file}))
+
+        if docs:
+            vector_store.add_documents(docs)
+            print(f"✅ Uploaded {len(docs)} docs to Pinecone index '{index_name}'")
+
+    return vector_store
+
+
 
 def apply_bullet_to_para(paragraph, list_id='1'):
     """
