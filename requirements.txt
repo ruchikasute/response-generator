@@ -3,9 +3,9 @@ langchain
 langchain-community
 langchain-core
 langchain-pinecone
-pinecone-client
 sentence-transformers
 faiss-cpu
 openai
 tiktoken
 huggingface-hub
+pinecone-client==2.2.4
